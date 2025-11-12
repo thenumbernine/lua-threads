@@ -50,7 +50,10 @@ return runClosure
 	self.funcptr = ffi.cast(threadFuncType, funcptr)
 
 	self.arg = arg	-- store before cast, so nils stay nils, for ease of truth testing
-	assert(type(arg) == 'nil' or type(arg) == 'cdata')
+	local argtype = type(arg)
+	if not (argtype == 'nil' or argtype == 'cdata') then
+		error("I don't know how to pass arg of type "..argtype.." into a new thread")
+	end
 	arg = ffi.cast('void*', arg)
 
 	local result = ffi.new'pthread_t[1]'
@@ -63,6 +66,40 @@ function Thread:join()
 	pthread_assert(pthread.pthread_join(self.id, result), 'pthread_join')
 	return result[0]
 end
+
+-- should be called from the thread
+function Thread:exit(value)
+	pthread.pthread_exit(ffi.cast('void*', value))
+end
+
+function Thread:detach()
+	pthread_assert(pthread.pthread_detach(self.id))
+end
+
+-- returns a pthread_t, not a Thread
+-- I could wrap this in a Thread, but it'd still have no Lua state...
+function Thread:self()
+	return pthread.pthread_self()
+end
+
+function Thread.__eq(a,b)
+	--[[ this seems like a nice thing for flexibility of testing Thread or pthread_t
+	-- but then again LuaJIT goes and made its __index fail INTO AN ERROR INSTEAD OF JUST RETURNING NIL
+	-- which I can circumvent using op.safeindex/xpcall
+	-- but that'd slow things down a lot
+	-- so instead this is only going to work for Thread objects
+	a = a.id or a
+	b = b.id or b
+	--]]
+	return 0 ~= pthread.pthread_equal(a.id, b.id)
+end
+
+-- TODO pthread_attr_* functions
+-- TODO pthread_*sched* functions
+-- TODO pthread_*cancel* functions
+-- TODO pthread_*mutex* functions
+-- TODO pthread_*key* functions
+-- TODO a lot more
 
 function Thread:__gc()
 	self:close()
