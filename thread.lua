@@ -49,6 +49,7 @@ return runClosure
 
 	self.funcptr = ffi.cast(threadFuncType, funcptr)
 
+	self.arg = arg	-- store before cast, so nils stay nils, for ease of truth testing
 	assert(type(arg) == 'nil' or type(arg) == 'cdata')
 	arg = ffi.cast('void*', arg)
 
@@ -75,7 +76,7 @@ function Thread:close()
 end
 
 function Thread.numThreads()
-	return tonumber(ffi.C.sysconf(ffi._SC_NPROCESSORS_ONLN))
+	return tonumber(ffi.C.sysconf(ffi.C._SC_NPROCESSORS_ONLN))
 end
 
 return Thread
