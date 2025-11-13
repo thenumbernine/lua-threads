@@ -2,10 +2,10 @@
 require 'ext.gc'	-- enable __gc for Lua tables in LuaJIT
 local ffi = require 'ffi'
 local class = require 'ext.class'
-local Lua = require 'lua'
 local pthread = require 'ffi.req' 'c.pthread'
 require 'ffi.req' 'c.unistd'	-- sysconf
-local errno = require 'ffi.req' 'c.errno'
+local Lua = require 'lua'
+local thread_assert = require 'thread.assert'
 
 
 local threadFuncTypeName = 'void*(*)(void*)'
@@ -14,11 +14,6 @@ local threadFuncType = ffi.typeof(threadFuncTypeName)
 local voidp = ffi.typeof'void*'
 local voidp_1 = ffi.typeof'void*[1]'
 local pthread_t_1 = ffi.typeof'pthread_t[1]'
-
-local function pthread_assert(err, msg)
-	if err == 0 then return end
-	error(ffi.string(ffi.C.strerror(err))..(msg and ' '..msg or ''))
-end
 
 
 local Thread = class()
@@ -62,13 +57,13 @@ return runClosure
 	arg = ffi.cast(voidp, arg)
 
 	local result = ffi.new(pthread_t_1)
-	pthread_assert(pthread.pthread_create(result, nil, funcptr, arg), 'pthread_create')
+	thread_assert(pthread.pthread_create(result, nil, funcptr, arg), 'pthread_create')
 	self.id = result[0]
 end
 
 function Thread:join()
 	local result = ffi.new(voidp_1)
-	pthread_assert(pthread.pthread_join(self.id, result), 'pthread_join')
+	thread_assert(pthread.pthread_join(self.id, result), 'pthread_join')
 	return result[0]
 end
 
@@ -78,7 +73,7 @@ function Thread:exit(value)
 end
 
 function Thread:detach()
-	pthread_assert(pthread.pthread_detach(self.id))
+	thread_assert(pthread.pthread_detach(self.id))
 end
 
 -- returns a pthread_t, not a Thread

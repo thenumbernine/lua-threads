@@ -5,11 +5,13 @@ local assert = require 'ext.assert'
 local pthread = require 'ffi.req' 'c.pthread'
 local Thread = require 'thread'
 local Semaphore = require 'thread.semaphore'
+local Mutex = require 'thread.mutex'
+
 local numThreads = Thread.numThreads()
 
 local poolTypeCode = [[
 typedef struct ThreadPool {
-	pthread_mutex_t tasksMutex[1];
+	pthread_mutex_t* tasksMutex;
 
 //only access the rest after grabbing 'tasksMutex'
 // (rename it to 'poolMutex' ?)
@@ -76,8 +78,9 @@ args:
 --]]
 function Pool:init(args)
 	self.size = self.size or Thread.numThreads()
+	self.tasksMutex = Mutex()
 	self.poolArg = ffi.new'ThreadPool[1]'
-	pthread.pthread_mutex_init(self.poolArg[0].tasksMutex+0, nil)
+	self.poolArg[0].tasksMutex = self.tasksMutex.id
 	self.poolArg[0].done = false
 	for i=1,self.size do
 		local worker = Worker()
@@ -111,12 +114,13 @@ assert(arg, 'expected thread argument')
 assert.type(arg, 'cdata')
 arg = ffi.cast('ThreadArg*', arg)
 local pool = arg.pool
+local tasksMutex = pool[0].tasksMutex
 
 <?=initcode or ''?>
 
 while true do
 
-	pthread.pthread_mutex_lock(pool[0].tasksMutex)
+	pthread.pthread_mutex_lock(tasksMutex)
 	local gotEmpty
 	local done = pool[0].done
 	local task
@@ -129,7 +133,7 @@ while true do
 			gotEmpty = true
 		end
 	end
-	pthread.pthread_mutex_unlock(pool[0].tasksMutex)
+	pthread.pthread_mutex_unlock(tasksMutex)
 	if done then return end
 
 	if task then
@@ -153,10 +157,10 @@ end
 end
 
 function Pool:ready(size)
-	pthread.pthread_mutex_lock(self.poolArg[0].tasksMutex)
+	self.tasksMutex:lock()
 	self.poolArg[0].taskIndex = 0
 	self.poolArg[0].taskCount = size or self.size
-	pthread.pthread_mutex_unlock(self.poolArg[0].tasksMutex)
+	self.tasksMutex:unlock()
 end
 
 function Pool:wait()
@@ -173,9 +177,9 @@ end
 -- pool's closed
 function Pool:closed()
 	-- set thread done flag so they will end and we can join them
-	pthread.pthread_mutex_lock(self.poolArg[0].tasksMutex)
+	self.tasksMutex:lock()
 	self.poolArg[0].done = true
-	pthread.pthread_mutex_unlock(self.poolArg[0].tasksMutex)
+	self.tasksMutex:unlock()
 
 	for _,worker in ipairs(self) do
 		local arg = worker.arg
@@ -187,7 +191,8 @@ function Pool:closed()
 		worker.thread:close()
 	end
 
-	pthread.pthread_mutex_destroy(self.poolArg[0].tasksMutex)
+	self.tasksMutex:destroy()
+	self.tasksMutex = nil
 end
 
 return Pool
