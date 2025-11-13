@@ -2,10 +2,30 @@ local ffi = require 'ffi'
 local template = require 'template'
 local class = require 'ext.class'
 local assert = require 'ext.assert'
+local pthread = require 'ffi.req' 'c.pthread'
 local Thread = require 'thread'
 local Semaphore = require 'thread.semaphore'
 local numThreads = Thread.numThreads()
 
+local poolTypeCode = [[
+typedef struct ThreadPool {
+	pthread_mutex_t tasksMutex[1];
+
+//only access the rest after grabbing 'tasksMutex'
+// (rename it to 'poolMutex' ?)
+
+	// starts at 0, only access through tasksMutex, threads get tasksMutex then increment this
+	// if it's at taskCount then set 'gotEmpty' so we can post to our semDone
+	size_t taskIndex;
+
+	// max # tasks
+	size_t taskCount;
+
+	// set this to end thread execution
+	bool done;
+} ThreadPool;
+]]
+ffi.cdef(poolTypeCode)
 
 -- save code separately so the threads can cdef this too
 -- TODO change design to be like Parallel: http://github.com/thenumbernine/Parallel
@@ -13,9 +33,11 @@ local numThreads = Thread.numThreads()
 -- and only one semaphore-per-thread to notify to wakeup
 local threadArgTypeCode = [[
 typedef struct ThreadArg {
-	sem_t *semReady;
+	//pointer to the shared threadpool info
+	ThreadPool * pool;
+
+	//each thread sets this when they are done
 	sem_t *semDone;
-	volatile bool done;
 } ThreadArg;
 ]]
 ffi.cdef(threadArgTypeCode)
@@ -54,55 +76,72 @@ args:
 --]]
 function Pool:init(args)
 	self.size = self.size or Thread.numThreads()
+	self.poolArg = ffi.new'ThreadPool[1]'
+	pthread.pthread_mutex_init(self.poolArg[0].tasksMutex+0, nil)
+	self.poolArg[0].done = false
 	for i=1,self.size do
 		local worker = Worker()
-		worker.semReady = Semaphore()
 		worker.semDone = Semaphore()
 
 		-- TODO how to allow the caller to override this
 		local threadArg = ffi.new'ThreadArg'
-		worker.arg = threadArg
-		threadArg.done = false
-		threadArg.semReady = worker.semReady.id
+		threadArg.pool = self.poolArg
 		threadArg.semDone = worker.semDone.id
+		worker.arg = threadArg
 
 		local initcode = getcode(self, args.initcode, i)
 		local code = getcode(self, args.code, i)
-
 
 		-- TODO in lua-lua, change the pcalls to use error handlers, AND REPORT THE ERRORS
 		-- TODO how to separate init code vs update code and make it modular ...
 		worker.thread = Thread(template([===[
 local ffi = require 'ffi'
 local assert = require 'ext.assert'
-local Semaphore = require 'thread.semaphore'
+local pthread = require 'ffi.req' 'c.pthread'
+local sem = require 'ffi.req' 'c.semaphore'	-- sem_t
 
--- will ffi.C carry across? 
+-- will ffi.C carry across?
 -- because its the same luajit process?
 -- nope, ffi.C is unique per lua-state
+ffi.cdef[[<?=poolTypeCode?>]]
 ffi.cdef[[<?=threadArgTypeCode?>]]
 
 -- holds semaphores etc of the thread
 assert(arg, 'expected thread argument')
 assert.type(arg, 'cdata')
 arg = ffi.cast('ThreadArg*', arg)
-
--- convert our sem_t* to our Semaphore.id.  (By default its sem_t[1], but sem_t* is interchangeable.)
--- looks like sem_destroy() can be called multiple times harmlessly, but if it ever crashes on any OS implementation, feel free to insert destroy=function() end to avoid multiple destroy calls.
-local semReady = setmetatable({id=arg.semReady}, Semaphore)
-local semDone = setmetatable({id=arg.semDone}, Semaphore)
+local pool = arg.pool
 
 <?=initcode or ''?>
 
-semReady:wait()
-while not arg.done do
+while true do
 
-	<?=code or ''?>
+	pthread.pthread_mutex_lock(pool[0].tasksMutex)
+	local gotEmpty
+	local done = pool[0].done
+	local task
+	if not done then
+		if pool[0].taskIndex < pool[0].taskCount then
+			task = pool[0].taskIndex
+			pool[0].taskIndex = pool[0].taskIndex + 1
+		end
+		if pool[0].taskIndex >= pool[0].taskCount then
+			gotEmpty = true
+		end
+	end
+	pthread.pthread_mutex_unlock(pool[0].tasksMutex)
+	if done then return end
 
-	semDone:post()
-	semReady:wait()
+	if task then
+		<?=code or ''?>
+	end
+
+	if gotEmpty then
+		sem.sem_post(arg.semDone)
+	end
 end
 ]===],			{
+					poolTypeCode = poolTypeCode,
 					threadArgTypeCode = threadArgTypeCode,
 					initcode = initcode,
 					code = code,
@@ -113,10 +152,11 @@ end
 	end
 end
 
-function Pool:ready()
-	for _,worker in ipairs(self) do
-		worker.semReady:post()
-	end
+function Pool:ready(size)
+	pthread.pthread_mutex_lock(self.poolArg[0].tasksMutex)
+	self.poolArg[0].taskIndex = 0
+	self.poolArg[0].taskCount = size or self.size
+	pthread.pthread_mutex_unlock(self.poolArg[0].tasksMutex)
 end
 
 function Pool:wait()
@@ -132,20 +172,22 @@ end
 
 -- pool's closed
 function Pool:closed()
+	-- set thread done flag so they will end and we can join them
+	pthread.pthread_mutex_lock(self.poolArg[0].tasksMutex)
+	self.poolArg[0].done = true
+	pthread.pthread_mutex_unlock(self.poolArg[0].tasksMutex)
+
 	for _,worker in ipairs(self) do
 		local arg = worker.arg
-		-- set thread done flag
-		arg.done = true
-		-- wake it up so it can break and return
-		worker.semReady:post()
 		-- join <-> wait for it to return
 		worker.thread:join()
 		-- destroy semaphores
-		worker.semReady:destroy()
 		worker.semDone:destroy()
 		-- destroy thread Lua state:
 		worker.thread:close()
 	end
+
+	pthread.pthread_mutex_destroy(self.poolArg[0].tasksMutex)
 end
 
 return Pool
