@@ -1,3 +1,4 @@
+require 'ext.gc'
 local ffi = require 'ffi'
 local template = require 'template'
 local class = require 'ext.class'
@@ -196,6 +197,10 @@ end
 
 -- pool's closed
 function Pool:closed()
+	-- if we don't have the tasksMutex then we can't really talk to the threads anymore
+	-- so assume it's already closed
+	if not self.tasksMutex then return end
+
 	-- set thread done flag so they will end and we can join them
 	self.tasksMutex:lock()
 	self.poolArg[0].done = true
@@ -215,6 +220,10 @@ function Pool:closed()
 
 	self.tasksMutex:destroy()
 	self.tasksMutex = nil
+end
+
+function Pool:__gc()
+	self:closed()
 end
 
 return Pool
