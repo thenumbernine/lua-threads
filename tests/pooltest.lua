@@ -22,7 +22,7 @@ local lastsum = 0
 for i=1,2*pool.size do
 	pool:cycle(i)
 
-	ffi.C.usleep(100000)
+	ffi.C.usleep(50000)
 
 	-- now we should be able to assert no pool thread is running (how?)
 	-- (can we tell if

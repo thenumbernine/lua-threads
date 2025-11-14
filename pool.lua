@@ -47,6 +47,9 @@ typedef struct ThreadArg {
 
 	//each thread sets this when they are done
 	sem_t *semDone;
+
+	//tell each thread to wake up when pool:ready() is called
+	sem_t *semReady;
 } ThreadArg;
 ]]
 ffi.cdef(threadArgTypeCode)
@@ -97,12 +100,14 @@ function Pool:init(args)
 
 	for i=1,self.size do
 		local worker = Worker()
+		worker.semReady = Semaphore()
 		worker.semDone = Semaphore()
 
 		-- TODO how to allow the caller to override this
 		local threadArg = ffi.new'ThreadArg'
 		threadArg.pool = self.poolArg
 		threadArg.semDone = worker.semDone.id
+		threadArg.semReady = worker.semReady.id
 		threadArg.threadIndex = i-1
 		worker.arg = threadArg
 
@@ -136,31 +141,37 @@ local userdata = pool.userdata
 <?=initcode or ''?>
 
 while true do
-
-	pthread.pthread_mutex_lock(tasksMutex)
-	local gotEmpty
-	local done = pool.done
-	local task
-	if not done then
-		if pool.taskIndex < pool.taskCount then
-			task = pool.taskIndex
-			pool.taskIndex = pool.taskIndex + 1
+	while true do
+		pthread.pthread_mutex_lock(tasksMutex)
+		local gotEmpty
+		local done = pool.done
+		local task
+		if not done then
+			if pool.taskIndex < pool.taskCount then
+				task = pool.taskIndex
+				pool.taskIndex = pool.taskIndex + 1
+			end
+			if pool.taskIndex >= pool.taskCount then
+				gotEmpty = true
+			end
 		end
-		if pool.taskIndex >= pool.taskCount then
-			gotEmpty = true
+		pthread.pthread_mutex_unlock(tasksMutex)
+
+		if done then return end
+
+		if task then
+			<?=code or ''?>
+		end
+
+		if gotEmpty then
+			sem.sem_post(arg.semDone)
+			-- break and wait for the semReady to start another work loop
+			break
 		end
 	end
-	pthread.pthread_mutex_unlock(tasksMutex)
 
-	if done then return end
-
-	if task then
-		<?=code or ''?>
-	end
-
-	if gotEmpty then
-		sem.sem_post(arg.semDone)
-	end
+	-- wait til 'pool:ready()' is called
+	sem.sem_wait(arg.semReady)
 end
 
 <?=donecode or ''?>
@@ -182,6 +193,10 @@ function Pool:ready(size)
 	self.poolArg[0].taskIndex = 0
 	self.poolArg[0].taskCount = size or self.size
 	self.tasksMutex:unlock()
+
+	for _,worker in ipairs(self) do
+		worker.semReady:post()
+	end
 end
 
 function Pool:wait()
@@ -207,15 +222,23 @@ function Pool:closed()
 	self.tasksMutex:unlock()
 
 	for _,worker in ipairs(self) do
-		local arg = worker.arg
+		-- resume so we can shut down
+		worker.semReady:post()
+
 		-- join <-> wait for it to return
 		worker.thread:join()
 		-- destroy semaphores
 		worker.semDone:destroy()
 		worker.semDone = nil
+		worker.semReady:destroy()
+		worker.semReady = nil
 		-- destroy thread Lua state:
 		worker.thread:close()
 		worker.thread = nil
+
+		worker.arg.semReady = nil
+		worker.arg.semDone = nil
+		worker.arg.pool = nil
 	end
 
 	self.tasksMutex:destroy()

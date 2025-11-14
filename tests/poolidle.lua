@@ -6,7 +6,7 @@ local pool = require 'thread.pool'{code=''}
 pool:cycle()
 
 -- this is up to you.  watch your CPU % and see what happens while the pool waits.
-ffi.C.sleep(1)
+ffi.C.sleep(3)
 
 pool:cycle()
 
