@@ -143,38 +143,35 @@ local userdata = pool.userdata
 sem.sem_wait(arg.semReady)
 
 while true do
-	while true do
+	local gotEmpty
+	repeat
 		pthread.pthread_mutex_lock(tasksMutex)
-		local gotEmpty
-		local done = pool.done
+		if pool.done then
+			pthread.pthread_mutex_unlock(tasksMutex)
+			goto done
+		end
 		local task
-		if not done then
-			if pool.taskIndex < pool.taskCount then
-				task = pool.taskIndex
-				pool.taskIndex = pool.taskIndex + 1
-			end
-			if pool.taskIndex >= pool.taskCount then
-				gotEmpty = true
-			end
+		if pool.taskIndex < pool.taskCount then
+			task = pool.taskIndex
+			pool.taskIndex = pool.taskIndex + 1
+		end
+		if pool.taskIndex >= pool.taskCount then
+			gotEmpty = true
 		end
 		pthread.pthread_mutex_unlock(tasksMutex)
-
-		if done then return end
 
 		if task then
 			<?=code or ''?>
 		end
+	until gotEmpty
 
-		if gotEmpty then
-			sem.sem_post(arg.semDone)
-			-- break and wait for the semReady to start another work loop
-			break
-		end
-	end
-
+	-- tell 'pool:wait()' to finish
+	sem.sem_post(arg.semDone)
 	-- wait til 'pool:ready()' is called
 	sem.sem_wait(arg.semReady)
 end
+
+::done::
 
 <?=donecode or ''?>
 ]===],			{
