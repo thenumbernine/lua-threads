@@ -1,11 +1,6 @@
 #!/usr/bin/env rua
-local LuaFixed = require 'lua.langfix'
-
-local Thread = require 'thread'
-Thread.Lua = LuaFixed 
-
-
 local Pool = require 'thread.pool'
+local Thread = require 'thread'
 
 local numThreads = Thread.numThreads()
 

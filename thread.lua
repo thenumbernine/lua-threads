@@ -17,7 +17,11 @@ local pthread_t_1 = ffi.typeof'pthread_t[1]'
 
 local Thread = class()
 
-Thread.Lua = require 'lua'
+if langfix then
+	Thread.Lua = require 'lua.langfix'
+else
+	Thread.Lua = require 'lua'
+end
 
 --[[
 code = Lua code to load and run on the new thread
